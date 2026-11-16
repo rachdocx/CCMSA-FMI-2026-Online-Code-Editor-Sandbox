@@ -63,15 +63,6 @@ The platform provides a comprehensive suite of developer capabilities directly w
 ##  Architecture Overview
 
 ![Architecture Diagram](architecture.drawio.png)
-## Database Design
-
-| Reason | Explanation |
-|---|---|
-| **Schema flexibility** | User metadata, project configs, and execution logs have different shapes — NoSQL handles this naturally |
-| **Cloud-native** | Managed service, auto-scaling, built-in replication — fits the course theme |
-| **Cost-efficient at low scale** | Free tier: 1000 RU/s + 25 GB — more than enough for a university project |
-| **Fast reads** | Execution history queries by userId are fast with partition key design |
-
 
 ---
 
