@@ -1,22 +1,29 @@
 # Online Code Editor & Sandbox
 
-Project for **Cloud Computing using Microsoft Azure** — BSc in Computer Science, University of Bucharest (Year 3, Semester 1).
+Project for "Cloud Computing using Microsoft Azure", completed as part of the BSc in Computer Science curriculum at the University of Bucharest third year, first semester.
 
 ---
 
 ## Overview
 
-A browser-based code editor and execution sandbox that allows users to write, run, and manage multi-file projects in multiple languages, with integrated AI debugging. Code execution runs in isolated cloud containers so users don't need local compilers or runtimes installed.
+A browser-based code editor and execution sandbox that allows users to write, run, and manage multi-file projects in multiple languages, with integrated AI debugging. 
+
+Code execution runs in isolated cloud containers so users don't need local compilers or runtimes installed.
 
 ---
 
 ## Functional Requirements
 
 - **Authentication**: Sign-up, login, and session handling via **Microsoft Entra ID** with JWT bearer tokens.
-- **Project Management**: Create, list, rename, and delete projects configured for specific languages (Python, C/C++, JavaScript, Java).
-- **File Management**: Create, edit, rename, and delete files/folders within a virtual tree. In-browser editing powered by **Monaco Editor**. Code files are saved directly to **Azure Blob Storage**.
-- **Code Execution**: Run code on demand with optional `stdin`. Submissions execute in isolated, disposable **Azure Container Instances** with resource and execution time limits.
+
+- **Project Management**: Create, list, rename, and delete projects configured for specific languages (Python, C/C++, JavaScript, Java and more).
+
+- **File Management**: Create, edit, rename, and delete files/folders within a virtual tree. In-browser editing with the **Monaco Editor** component (the one Visual Studio Code uses). Code files are saved in **Azure Blob Storage**.
+
+- **Code Execution**: Run code with optional `stdin`. Submissions execute in isolated, disposable **Azure Container Instances** with resource and execution time limits.
+
 - **Execution History**: Execution metadata, outputs (`stdout`/`stderr`), exit codes, and durations are logged in **Azure Cosmos DB**.
+
 - **AI Debug Assistant**: Send failing code and error outputs to **Azure OpenAI (GPT-4o)** to get root-cause explanations and suggested fixes.
 
 ---
@@ -25,7 +32,7 @@ A browser-based code editor and execution sandbox that allows users to write, ru
 
 ![Architecture Diagram](architecture.drawio.png)
 
-### Azure Services Used
+### Azure Service
 
 | Service | Role | Purpose |
 |---|---|---|
