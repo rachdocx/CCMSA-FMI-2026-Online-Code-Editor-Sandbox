@@ -1,0 +1,552 @@
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Azure networking lab: 2 VNets + peering, Linux VMs, storage private endpoint, internal Standard load balancer. Deploy at resource group scope."
+  },
+  "parameters": {
+    "suffix": {
+      "type": "string",
+      "defaultValue": "rgab80",
+      "metadata": {
+        "description": "Unique suffix; storage account becomes stor<suffix>"
+      }
+    },
+    "backendLocation": {
+      "type": "string",
+      "defaultValue": "polandcentral"
+    },
+    "frontendLocation": {
+      "type": "string",
+      "defaultValue": "polandcentral",
+      "metadata": {
+        "description": "Lab uses westeurope. Set it if your subscription allows it, otherwise use an allowed region."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B1s",
+      "metadata": {
+        "description": "If unavailable, try Standard_B2ats_v2"
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser"
+    },
+    "sshPublicKey": {
+      "type": "string",
+      "metadata": {
+        "description": "Contents of your public key (e.g. ~/.ssh/id_rsa.pub) for vm-web"
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Password for vm-app and vm-app2 (reached only via vm-web)"
+      }
+    },
+    "myIp": {
+      "type": "string",
+      "metadata": {
+        "description": "Your public IP in CIDR form, e.g. 203.0.113.10/32 (allowed to SSH to vm-web)"
+      }
+    }
+  },
+  "variables": {
+    "storageName": "[toLower(concat('stor', parameters('suffix')))]",
+    "appVms": [
+      "vm-app",
+      "vm-app2"
+    ],
+    "vnetFrontendId": "[resourceId('Microsoft.Network/virtualNetworks', 'vnet-frontend')]",
+    "vnetBackendId": "[resourceId('Microsoft.Network/virtualNetworks', 'vnet-backend')]",
+    "subnetWebId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', 'vnet-frontend', 'subnet-web')]",
+    "subnetAppId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', 'vnet-backend', 'subnet-app')]",
+    "subnetPrivateId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', 'vnet-backend', 'subnet-private')]",
+    "lbId": "[resourceId('Microsoft.Network/loadBalancers', 'lb-app')]",
+    "dnsZoneName": "privatelink.blob.core.windows.net",
+    "imageReference": {
+      "publisher": "Canonical",
+      "offer": "0001-com-ubuntu-server-jammy",
+      "sku": "22_04-lts-gen2",
+      "version": "latest"
+    },
+    "webScript": "mkdir -p /var/www/demo\necho \"Hello from $(hostname)\" > /var/www/demo/index.html\nsystemd-run --unit=demo-web /usr/bin/python3 -m http.server 80 --directory /var/www/demo\n"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-09-01",
+      "name": "nsg-web",
+      "location": "[parameters('frontendLocation')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "rule-ssh",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "[parameters('myIp')]",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-09-01",
+      "name": "[concat(variables('appVms')[copyIndex()], '-nsg')]",
+      "location": "[parameters('backendLocation')]",
+      "copy": {
+        "name": "appNsgLoop",
+        "count": "[length(variables('appVms'))]"
+      },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-09-01",
+      "name": "vnet-frontend",
+      "location": "[parameters('frontendLocation')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.0.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "subnet-web",
+            "properties": {
+              "addressPrefix": "10.0.1.0/24"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-09-01",
+      "name": "vnet-backend",
+      "location": "[parameters('backendLocation')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.1.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "subnet-app",
+            "properties": {
+              "addressPrefix": "10.1.1.0/24"
+            }
+          },
+          {
+            "name": "subnet-private",
+            "properties": {
+              "addressPrefix": "10.1.2.0/24"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/virtualNetworkPeerings",
+      "apiVersion": "2023-09-01",
+      "name": "vnet-frontend/peer-to-backend",
+      "dependsOn": [
+        "[variables('vnetFrontendId')]",
+        "[variables('vnetBackendId')]"
+      ],
+      "properties": {
+        "remoteVirtualNetwork": {
+          "id": "[variables('vnetBackendId')]"
+        },
+        "allowVirtualNetworkAccess": true,
+        "allowForwardedTraffic": false,
+        "allowGatewayTransit": false,
+        "useRemoteGateways": false
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/virtualNetworkPeerings",
+      "apiVersion": "2023-09-01",
+      "name": "vnet-backend/peer-to-frontend",
+      "dependsOn": [
+        "[variables('vnetFrontendId')]",
+        "[variables('vnetBackendId')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/virtualNetworkPeerings', 'vnet-frontend', 'peer-to-backend')]"
+      ],
+      "properties": {
+        "remoteVirtualNetwork": {
+          "id": "[variables('vnetFrontendId')]"
+        },
+        "allowVirtualNetworkAccess": true,
+        "allowForwardedTraffic": false,
+        "allowGatewayTransit": false,
+        "useRemoteGateways": false
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-09-01",
+      "name": "vm-web-pip",
+      "location": "[parameters('frontendLocation')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-09-01",
+      "name": "vm-web-nic",
+      "location": "[parameters('frontendLocation')]",
+      "dependsOn": [
+        "[variables('vnetFrontendId')]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', 'vm-web-pip')]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', 'nsg-web')]"
+      ],
+      "properties": {
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', 'nsg-web')]"
+        },
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[variables('subnetWebId')]"
+              },
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', 'vm-web-pip')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2023-09-01",
+      "name": "vm-web",
+      "location": "[parameters('frontendLocation')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', 'vm-web-nic')]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": "[variables('imageReference')]",
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "vm-web",
+          "adminUsername": "[parameters('adminUsername')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                  "keyData": "[parameters('sshPublicKey')]"
+                }
+              ]
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', 'vm-web-nic')]"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/loadBalancers",
+      "apiVersion": "2023-09-01",
+      "name": "lb-app",
+      "location": "[parameters('backendLocation')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Regional"
+      },
+      "dependsOn": [
+        "[variables('vnetBackendId')]"
+      ],
+      "properties": {
+        "frontendIPConfigurations": [
+          {
+            "name": "fe-app",
+            "properties": {
+              "subnet": {
+                "id": "[variables('subnetAppId')]"
+              },
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "10.1.1.100"
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "be-app"
+          }
+        ],
+        "probes": [
+          {
+            "name": "probe-http",
+            "properties": {
+              "protocol": "Http",
+              "port": 80,
+              "requestPath": "/",
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          }
+        ],
+        "loadBalancingRules": [
+          {
+            "name": "rule-http",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[concat(variables('lbId'), '/frontendIPConfigurations/fe-app')]"
+              },
+              "backendAddressPool": {
+                "id": "[concat(variables('lbId'), '/backendAddressPools/be-app')]"
+              },
+              "probe": {
+                "id": "[concat(variables('lbId'), '/probes/probe-http')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 80,
+              "backendPort": 80,
+              "idleTimeoutInMinutes": 4,
+              "enableFloatingIP": false,
+              "loadDistribution": "Default"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-09-01",
+      "name": "[concat(variables('appVms')[copyIndex()], '-nic')]",
+      "location": "[parameters('backendLocation')]",
+      "copy": {
+        "name": "appNicLoop",
+        "count": "[length(variables('appVms'))]"
+      },
+      "dependsOn": [
+        "[variables('vnetBackendId')]",
+        "[variables('lbId')]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', concat(variables('appVms')[copyIndex()], '-nsg'))]"
+      ],
+      "properties": {
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', concat(variables('appVms')[copyIndex()], '-nsg'))]"
+        },
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[variables('subnetAppId')]"
+              },
+              "privateIPAllocationMethod": "Dynamic",
+              "loadBalancerBackendAddressPools": [
+                {
+                  "id": "[concat(variables('lbId'), '/backendAddressPools/be-app')]"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('appVms')[copyIndex()]]",
+      "location": "[parameters('backendLocation')]",
+      "copy": {
+        "name": "appVmLoop",
+        "count": "[length(variables('appVms'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('appVms')[copyIndex()], '-nic'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "storageProfile": {
+          "imageReference": "[variables('imageReference')]",
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('appVms')[copyIndex()]]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": false
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('appVms')[copyIndex()], '-nic'))]"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2023-09-01",
+      "name": "[concat(variables('appVms')[copyIndex()], '/start-demo-web')]",
+      "location": "[parameters('backendLocation')]",
+      "copy": {
+        "name": "appRunCmdLoop",
+        "count": "[length(variables('appVms'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('appVms')[copyIndex()])]"
+      ],
+      "properties": {
+        "source": {
+          "script": "[variables('webScript')]"
+        },
+        "asyncExecution": false,
+        "timeoutInSeconds": 120
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('backendLocation')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "publicNetworkAccess": "Disabled",
+        "networkAcls": {
+          "defaultAction": "Deny",
+          "bypass": "None"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('dnsZoneName')]",
+      "location": "global"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[concat(variables('dnsZoneName'), '/link-vnet-backend')]",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]",
+        "[variables('vnetBackendId')]"
+      ],
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[variables('vnetBackendId')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-09-01",
+      "name": "pe-stor",
+      "location": "[parameters('backendLocation')]",
+      "dependsOn": [
+        "[variables('vnetBackendId')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": {
+        "subnet": {
+          "id": "[variables('subnetPrivateId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "pe-stor-conn",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+              "groupIds": [
+                "blob"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-09-01",
+      "name": "pe-stor/default",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', 'pe-stor')]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', variables('dnsZoneName'), 'link-vnet-backend')]"
+      ],
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "blob",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "vmWebPublicIp": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', 'vm-web-pip')).ipAddress]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageName')]"
+    },
+    "loadBalancerFrontendIp": {
+      "type": "string",
+      "value": "10.1.1.100"
+    }
+  }
+}

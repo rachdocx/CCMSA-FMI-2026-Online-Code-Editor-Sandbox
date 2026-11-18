@@ -1,0 +1,149 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Lab 3: App Service (Free F1, Linux, .NET 9) + Flex Consumption Function App (.NET 9 isolated). Infrastructure only; code is deployed afterwards with az CLI. Deploy at resource group scope."
+  },
+  "parameters": {
+    "suffix": {
+      "type": "string",
+      "defaultValue": "rgab80",
+      "metadata": { "description": "Lowercase unique suffix used in all resource names" }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "polandcentral",
+      "metadata": { "description": "Must support Flex Consumption and have App Service quota" }
+    },
+    "greeting": {
+      "type": "string",
+      "defaultValue": "Good morning",
+      "metadata": { "description": "Value of the Greeting app setting (Step 4 of the lab)" }
+    },
+    "maxInstances": {
+      "type": "int",
+      "defaultValue": 40
+    }
+  },
+  "variables": {
+    "appPlanName": "[concat('plan-lab3-', parameters('suffix'))]",
+    "apiName": "[concat('api-lab3-', parameters('suffix'))]",
+    "funcPlanName": "[concat('plan-func-lab3-', parameters('suffix'))]",
+    "funcName": "[concat('func-lab3-', parameters('suffix'))]",
+    "storageName": "[toLower(concat('stlab3', parameters('suffix')))]",
+    "deployContainer": "[concat('app-package-', variables('funcName'))]",
+    "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+    "storageConnString": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageName'), ';AccountKey=', listKeys(variables('storageId'), '2023-01-01').keys[0].value, ';EndpointSuffix=', environment().suffixes.storage)]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('appPlanName')]",
+      "location": "[parameters('location')]",
+      "kind": "linux",
+      "sku": { "name": "F1", "tier": "Free" },
+      "properties": { "reserved": true }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('apiName')]",
+      "location": "[parameters('location')]",
+      "kind": "app,linux",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appPlanName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appPlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "DOTNETCORE|9.0",
+          "alwaysOn": false,
+          "appSettings": [
+            { "name": "Greeting", "value": "[parameters('greeting')]" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageName'), '/default/', variables('deployContainer'))]",
+      "dependsOn": [ "[variables('storageId')]" ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('funcPlanName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "sku": { "name": "FC1", "tier": "FlexConsumption" },
+      "properties": { "reserved": true }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('funcName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('funcPlanName'))]",
+        "[variables('storageId')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', variables('deployContainer'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('funcPlanName'))]",
+        "httpsOnly": true,
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[concat(reference(variables('storageId'), '2023-01-01').primaryEndpoints.blob, variables('deployContainer'))]",
+              "authentication": {
+                "type": "StorageAccountConnectionString",
+                "storageAccountConnectionStringName": "DEPLOYMENT_STORAGE_CONNECTION_STRING"
+              }
+            }
+          },
+          "runtime": { "name": "dotnet-isolated", "version": "9.0" },
+          "scaleAndConcurrency": {
+            "maximumInstanceCount": "[parameters('maxInstances')]",
+            "instanceMemoryMB": 2048
+          }
+        },
+        "siteConfig": {
+          "appSettings": [
+            { "name": "AzureWebJobsStorage", "value": "[variables('storageConnString')]" },
+            { "name": "DEPLOYMENT_STORAGE_CONNECTION_STRING", "value": "[variables('storageConnString')]" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "apiUrl": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', variables('apiName'))).defaultHostName)]"
+    },
+    "functionHost": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('funcName'))).defaultHostName]"
+    }
+  }
+}
